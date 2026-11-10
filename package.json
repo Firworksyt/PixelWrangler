@@ -1,0 +1,21 @@
+{
+  "name": "pixel-wrangler",
+  "version": "0.1.0",
+  "description": "Turn photos into palette-limited pixel art, entirely in the browser",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "lint": "eslint \"**/*.js\""
+  },
+  "author": "",
+  "license": "WTFPL",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "jest": "^30.5.2",
+    "pngjs": "^7.0.0"
+  }
+}

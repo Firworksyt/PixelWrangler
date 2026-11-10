@@ -1,0 +1,12 @@
+services:
+  pixelwrangler:
+    image: ghcr.io/firworksyt/pixelwrangler:latest
+    build:
+      context: .
+      args:
+        COMMIT_HASH: ${COMMIT_HASH:-unknown}
+        COMMIT_DATE: ${COMMIT_DATE:-}
+        BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

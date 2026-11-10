@@ -1,0 +1,4 @@
+# Keep LF everywhere (the repo is often edited from Windows) and never touch
+# the parity fixtures: they must stay byte-identical.
+* text=auto eol=lf
+*.png binary

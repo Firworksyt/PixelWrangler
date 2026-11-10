@@ -1,0 +1,15 @@
+# Only nginx.conf and public/ go into the image.
+node_modules
+coverage/
+.git
+.gitignore
+.github
+__tests__/
+scripts/
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+eslint.config.js
+jest.config.js
+package*.json
