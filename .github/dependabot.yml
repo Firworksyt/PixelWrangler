@@ -32,6 +32,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # One PR for all action bumps instead of one per action.
+    groups:
+      actions:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
     commit-message:
