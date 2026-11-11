@@ -1,13 +1,22 @@
 // Minimal static server for local development: `npm run dev`.
-// Production uses nginx (see nginx.conf), which also sets the security headers.
+// Production uses nginx (see nginx.conf); this mirrors its security headers.
 import { execSync } from "node:child_process";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
+
+// Send the same security headers as production, so a blocked request shows up locally.
+const HEADERS = Object.fromEntries(
+    [...readFileSync(new URL("../nginx.conf", import.meta.url), "utf8")
+        .matchAll(/^\s*add_header\s+(\S+)\s+"([^"]*)"\s+always;/gm)]
+        .filter(([, name]) => name !== "Cache-Control")
+        .map(([, name, value]) => [name, value]),
+);
 const TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -42,7 +51,11 @@ createServer(async (req, res) => {
     }
     try {
         const body = await readFile(file);
-        res.writeHead(200, { "Content-Type": TYPES[extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
+        res.writeHead(200, {
+            ...HEADERS,
+            "Content-Type": TYPES[extname(file)] || "application/octet-stream",
+            "Cache-Control": "no-store",
+        });
         res.end(body);
     } catch {
         res.writeHead(404).end("Not found");

@@ -10,3 +10,11 @@ services:
     ports:
       - "8080:8080"
     restart: unless-stopped
+    # Static files only: nothing needs to be writable except nginx's /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

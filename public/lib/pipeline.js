@@ -56,10 +56,11 @@ export function hexPalette(hexes) {
  * Step 2: Floyd–Steinberg at strength 1.0, exactly as quantize_fs().
  * Quirks kept on purpose: the working buffer is clamped to 0..255 after every
  * error push, and the nearest-colour search truncates the working values to ints.
+ * Returns the palette index of every pixel (w*h).
  */
-export function floydSteinberg(rgb, w, h, pal) {
+export function floydSteinbergIndices(rgb, w, h, pal) {
     const work = Float64Array.from(rgb);
-    const out = new Uint8Array(w * h * 3);
+    const out = new Uint8Array(w * h);
     const n = pal.length / 3;
     const push = (j, er, eg, eb, f) => {
         work[j] = clamp(work[j] + (er * f) / 16);
@@ -79,7 +80,7 @@ export function floydSteinberg(rgb, w, h, pal) {
                 if (d < bestD) { bestD = d; best = p; }
             }
             const nr = pal[best * 3], ng = pal[best * 3 + 1], nb = pal[best * 3 + 2];
-            out[i] = nr; out[i + 1] = ng; out[i + 2] = nb;
+            out[y * w + x] = best;
             const er = r - nr, eg = g - ng, eb = b - nb;
             if (x + 1 < w) push(i + 3, er, eg, eb, 7);
             if (y + 1 < h) {
@@ -89,6 +90,31 @@ export function floydSteinberg(rgb, w, h, pal) {
                 if (x + 1 < w) push(below + 3, er, eg, eb, 1);
             }
         }
+    }
+    return out;
+}
+
+/** Floyd–Steinberg returning RGB (w*h*3). */
+export function floydSteinberg(rgb, w, h, pal) {
+    return indicesToRGB(floydSteinbergIndices(rgb, w, h, pal), pal);
+}
+
+/** Palette indices -> RGB. */
+export function indicesToRGB(idx, pal) {
+    const out = new Uint8Array(idx.length * 3);
+    for (let i = 0; i < idx.length; i++) {
+        const p = idx[i] * 3;
+        out[i * 3] = pal[p]; out[i * 3 + 1] = pal[p + 1]; out[i * 3 + 2] = pal[p + 2];
+    }
+    return out;
+}
+
+/** Palette indices -> RGBA (alpha 255), for drawing a frame on a canvas. */
+export function indicesToRGBA(idx, pal, out = new Uint8ClampedArray(idx.length * 4)) {
+    for (let i = 0; i < idx.length; i++) {
+        const p = idx[i] * 3;
+        const o = i * 4;
+        out[o] = pal[p]; out[o + 1] = pal[p + 1]; out[o + 2] = pal[p + 2]; out[o + 3] = 255;
     }
     return out;
 }

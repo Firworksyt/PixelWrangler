@@ -169,7 +169,7 @@ kbd {
     background: var(--surface-2);
     font: 12px var(--mono); color: var(--text);
 }
-.change-row { display: flex; gap: 8px; }
+.change-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .change-row .btn { flex: 1 1 auto; }
 #work-msg { margin: -8px 0 0; font-size: 13px; }
 #work-msg:empty { display: none; }
@@ -205,7 +205,8 @@ kbd {
     touch-action: none;
     user-select: none;
 }
-.stage img {
+.stage img,
+.stage video {
     display: block;
     max-width: 100%;
     max-height: 58vh;
@@ -251,6 +252,16 @@ kbd {
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); }
 .seg.disabled { opacity: 0.4; pointer-events: none; }
 #orient button { font-family: inherit; }
+
+.fps-row { display: flex; align-items: center; gap: 8px; }
+.fps-row input {
+    width: 76px; height: 34px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-2); color: var(--text);
+    font: 14px var(--mono);
+}
+.fps-row input.invalid { border-color: var(--danger); }
+.fps-row .hint { margin-left: auto; font-family: var(--mono); }
 
 .crop-hint { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: -4px 0 0; }
 
@@ -308,7 +319,7 @@ kbd {
 }
 .card.blank canvas { visibility: hidden; }
 .card.blank .card-img::after {
-    content: "Choose an image to preview";
+    content: "Choose an image or video to preview";
     position: absolute; inset: 0;
     display: grid; place-items: center;
     color: var(--muted); font-size: 13px;

@@ -3,7 +3,10 @@
 Turn photos into palette-limited pixel art. Pick an image, choose the framing, and get a
 gallery of the same image rendered in each of your palettes, each one ready to download.
 
-Everything happens in your browser. Images are never uploaded. The only network request
+Videos work too: drop one in, pick a frame rate, and each palette card plays it back as
+pixel art, ready to download as a looping GIF.
+
+Everything happens in your browser. Your files are never uploaded. The only network request
 the page makes is fetching a palette from [Lospec](https://lospec.com/palette-list) when
 you add one by name.
 
@@ -13,11 +16,12 @@ you add one by name.
 
 ## Features
 
-- 🖼️ Open an image by browsing, drag and drop, the Paste button, or Ctrl/⌘+V
+- 🖼️ Open an image or video by browsing, drag and drop, or Ctrl/⌘+V (the Paste button works for images)
+- 🎞️ Videos become animated GIFs: pick the frame rate (default 4 fps) and every palette card plays it
 - ✂️ Aspect ratios 2:1, 16:9, 3:2, 4:3 and 1:1, landscape or portrait, with a draggable crop
 - 🎨 One card per palette, processed with Floyd–Steinberg dithering
 - ➕ Add any Lospec palette by name (e.g. `nostalgic-dreams`); your list is saved in the browser
-- ⬇️ Download a crisp PNG at 8× (2048×1024 for 2:1), with no metadata from the original photo
+- ⬇️ Download a crisp PNG (or GIF for videos) at 8× (2048×1024 for 2:1), with no metadata from the original
 - 🌙 Light and dark mode (follows your system, with a toggle that remembers your choice)
 - 🔖 Footer shows the deployed commit and its date, linked to GitHub
 - 🔒 No uploads, no accounts, no tracking
@@ -28,6 +32,9 @@ you add one by name.
    (256×128 at 2:1). Every ratio keeps the same pixel budget so the pixels look the same size.
 2. Map every pixel to the palette with Floyd–Steinberg error diffusion.
 3. Upscale ×8 with nearest-neighbour for the download.
+
+Videos are sampled at the chosen frame rate and every frame goes through the same steps,
+then they're saved as a looping GIF that uses the palette's exact colours.
 
 ## Development
 

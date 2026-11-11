@@ -1,5 +1,8 @@
-import { RATIOS, UPSCALE, cropBox, targetSize, upscaleRGBA, rgbToRGBA } from "./lib/pipeline.js";
+import { RATIOS, UPSCALE, cropBox, hexPalette, indicesToRGB, indicesToRGBA, targetSize, upscaleRGBA } from "./lib/pipeline.js";
 import { DEFAULT_PALETTES, fetchLospec, loadPalettes, lospecUrl, parseSlug, savePalettes } from "./lib/palettes.js";
+import { delayFor } from "./lib/gif.js";
+import { DEFAULT_FPS, frameDelayLabel, frameTimes, isVideoFile, parseFps } from "./lib/media.js";
+import { openVideo, seekTo } from "./video.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -12,12 +15,18 @@ const els = {
     workspace: $("#workspace"),
     stage: $("#stage"),
     preview: $("#preview"),
+    previewVideo: $("#preview-video"),
     cropbox: $("#cropbox"),
     ratios: $("#ratios"),
     orient: $("#orient"),
     recenter: $("#recenter"),
     dragHint: $("#drag-hint"),
+    fpsField: $("#fps-field"),
+    fps: $("#fps"),
+    fpsHint: $("#fps-hint"),
     metaSource: $("#meta-source"),
+    metaFramesRow: $("#meta-frames-row"),
+    metaFrames: $("#meta-frames"),
     metaPixels: $("#meta-pixels"),
     metaOut: $("#meta-out"),
     change: $("#change"),
@@ -33,66 +42,114 @@ const els = {
 };
 
 const state = {
-    image: null, // { name, width, height, url }
+    media: null, // { kind: "image" | "video", name, url, width, height, duration?, el? }
     ratio: "2:1",
     portrait: false,
     pos: 0.5,
+    fps: DEFAULT_FPS,
     palettes: loadPalettes(),
-    results: new Map(), // slug -> { rgb, w, h } for the current key
+    results: new Map(), // slug -> { w, h, frames: [indices], pal, delay } for the current key
     key: "",
     job: 0,
+    extract: null, // video frame reading in progress: { job, key, total, sent, acked, done, wake }
 };
 
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
-// ---------- image loading ----------
+const isVideo = () => state.media?.kind === "video";
+
+// ---------- opening files ----------
 
 function openFile(file) {
     if (!file) return;
-    if (file.type && !file.type.startsWith("image/")) {
-        showDropError("That file isn't an image.");
+    const kind = isVideoFile(file) ? "video" : !file.type || file.type.startsWith("image/") ? "image" : null;
+    if (!kind) {
+        showDropError("That file isn't an image or a video.");
         return;
     }
-    if (state.image?.url) URL.revokeObjectURL(state.image.url);
-    state.image = { name: baseName(file.name || "image"), url: URL.createObjectURL(file), width: 0, height: 0 };
+    closeMedia();
+    const media = { kind, name: baseName(file.name || kind), url: URL.createObjectURL(file), width: 0, height: 0 };
+    state.media = media;
     state.pos = 0.5;
-    state.key = "";
-    state.results.clear();
     els.dropMsg.textContent = "Opening…";
     els.dropMsg.classList.remove("error");
-    els.workMsg.textContent = "";
+    setStatus("");
     syncGallery();
-    worker.postMessage({ type: "load", file });
+    if (kind === "image") {
+        worker.postMessage({ type: "load", file });
+    } else {
+        openVideo(media.url).then(
+            ({ el, width, height, duration }) => {
+                if (state.media !== media) return;
+                Object.assign(media, { el, width, height, duration });
+                onLoaded();
+            },
+            () => {
+                if (state.media === media) onLoadError();
+            },
+        );
+    }
 }
 
-function onLoaded(width, height) {
-    Object.assign(state.image, { width, height });
-    els.preview.src = state.image.url;
+function closeMedia() {
+    stopExtraction();
+    state.key = "";
+    state.results.clear();
+    const old = state.media;
+    state.media = null;
+    if (!old) return;
+    els.previewVideo.pause();
+    els.previewVideo.removeAttribute("src");
+    els.preview.removeAttribute("src");
+    old.el?.removeAttribute("src");
+    URL.revokeObjectURL(old.url);
+}
+
+function onLoaded() {
+    const m = state.media;
+    const video = isVideo();
+    els.preview.hidden = video;
+    els.previewVideo.hidden = !video;
+    if (video) {
+        els.previewVideo.src = m.url;
+        els.previewVideo.play().catch(() => {});
+    } else {
+        els.preview.src = m.url;
+    }
     els.drop.hidden = true;
     els.workspace.hidden = false;
     els.dropMsg.textContent = "";
-    els.metaSource.textContent = `${width} × ${height}`;
+    els.fpsField.hidden = !video;
+    els.metaFramesRow.hidden = !video;
+    els.metaSource.textContent = video
+        ? `${m.width} × ${m.height} · ${m.duration.toFixed(1)} s`
+        : `${m.width} × ${m.height}`;
     updateCrop();
     render();
 }
 
 function onLoadError() {
-    if (state.image?.url) URL.revokeObjectURL(state.image.url);
-    state.image = null;
+    const video = isVideo();
+    closeMedia();
     els.workspace.hidden = true;
     els.drop.hidden = false;
-    showDropError(
-        "This browser couldn't open that file. iPhone HEIC photos only open in Safari, so convert to JPEG or PNG first.",
-    );
+    showDropError(video
+        ? "This browser can't play that video. iPhone HEVC videos often only play in Safari, so try an MP4 (H.264) or WebM."
+        : "This browser couldn't open that file. iPhone HEIC photos only open in Safari, so convert to JPEG or PNG first.");
     syncGallery();
 }
 
-// Shown in the drop box, or under the controls when an image is open.
+// Shown in the drop box, or under the controls when something is open.
 function showDropError(text) {
     for (const el of [els.dropMsg, els.workMsg]) {
         el.textContent = text;
         el.classList.add("error");
     }
+}
+
+function setStatus(text) {
+    els.workMsg.textContent = text;
+    els.workMsg.classList.remove("error");
 }
 
 function baseName(name) {
@@ -107,12 +164,16 @@ function size() {
 
 function currentBox() {
     const { w, h } = size();
-    return cropBox(state.image.width, state.image.height, w, h, state.pos);
+    return cropBox(state.media.width, state.media.height, w, h, state.pos);
+}
+
+function previewEl() {
+    return isVideo() ? els.previewVideo : els.preview;
 }
 
 function updateCrop() {
-    if (!state.image?.width) return;
-    const { width: W, height: H } = state.image;
+    if (!state.media?.width) return;
+    const { width: W, height: H } = state.media;
     const b = currentBox();
     Object.assign(els.cropbox.style, {
         left: `${(b.x / W) * 100}%`,
@@ -127,7 +188,8 @@ function updateCrop() {
 
     const { w, h } = size();
     els.metaPixels.textContent = `${w} × ${h}`;
-    els.metaOut.textContent = `${w * UPSCALE} × ${h * UPSCALE}`;
+    els.metaOut.textContent = `${w * UPSCALE} × ${h * UPSCALE} ${isVideo() ? "GIF" : "PNG"}`;
+    updateFrameMeta();
     for (const btn of els.ratios.querySelectorAll("button")) {
         btn.setAttribute("aria-pressed", String(btn.dataset.ratio === state.ratio));
         const [rw, rh] = btn.dataset.ratio.split(":");
@@ -141,12 +203,18 @@ function updateCrop() {
     els.gallery.style.setProperty("--card-min", `${Math.max(220, Math.round(340 * Math.min(1, w / h / 1.3)))}px`);
 }
 
+function updateFrameMeta() {
+    if (!isVideo()) return;
+    els.fpsHint.textContent = frameDelayLabel(state.fps);
+    els.metaFrames.textContent = String(frameTimes(state.media.duration, state.fps).length);
+}
+
 let drag = null;
 
 els.stage.addEventListener("pointerdown", (e) => {
-    if (!state.image?.width || els.cropbox.dataset.axis === "none") return;
+    if (!state.media?.width || els.cropbox.dataset.axis === "none") return;
     const b = currentBox();
-    const scale = state.image.width / els.preview.clientWidth;
+    const scale = state.media.width / previewEl().clientWidth;
     drag = { id: e.pointerId, x: e.clientX, y: e.clientY, box: b, scale };
     els.stage.setPointerCapture(e.pointerId);
     els.stage.classList.add("dragging");
@@ -156,7 +224,7 @@ els.stage.addEventListener("pointerdown", (e) => {
 els.stage.addEventListener("pointermove", (e) => {
     if (!drag || e.pointerId !== drag.id) return;
     const { box, scale } = drag;
-    const { width: W, height: H } = state.image;
+    const { width: W, height: H } = state.media;
     if (box.axis === "x") {
         const slack = W - box.w;
         state.pos = clamp01((box.x + (e.clientX - drag.x) * scale) / slack);
@@ -216,54 +284,148 @@ els.recenter.addEventListener("click", () => {
     render();
 });
 
+els.fps.addEventListener("input", () => {
+    const fps = parseFps(els.fps.value);
+    els.fps.classList.toggle("invalid", !fps);
+    if (!fps || fps === state.fps) return;
+    state.fps = fps;
+    updateFrameMeta();
+    // Old results are now stale: stop showing them as ready while the user is still typing.
+    stopExtraction();
+    state.key = "";
+    state.results.clear();
+    syncGallery();
+    renderSoon(500);
+});
+
 // ---------- rendering ----------
 
 let renderTimer = 0;
-function renderSoon() {
+function renderSoon(ms = 200) {
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(render, 200);
+    renderTimer = setTimeout(render, ms);
 }
 
-/** Ask the worker for every palette that has no result yet for the current crop. */
+/** Bring every palette card up to date with the current media and crop. */
 function render() {
     clearTimeout(renderTimer);
-    if (!state.image?.width) {
+    if (!state.media?.width) {
         syncGallery();
         return;
     }
     const { w, h } = size();
-    const key = `${w}x${h}@${state.pos}`;
+    const key = isVideo() ? `${w}x${h}@${state.pos}@${state.fps}` : `${w}x${h}@${state.pos}`;
     if (key !== state.key) {
         state.key = key;
         state.results.clear();
+        if (isVideo()) startExtraction(key, w, h);
     }
     syncGallery();
+    if (isVideo() && !state.extract?.done) return; // palettes are requested once all frames are read
+    requestMissing();
+}
+
+/** Ask the worker for every palette that has no result yet for the current key. */
+function requestMissing() {
     const missing = state.palettes.filter((p) => !state.results.has(p.slug));
-    if (!missing.length) return;
+    if (!missing.length) {
+        if (isVideo()) setStatus("");
+        return;
+    }
     state.job += 1;
-    worker.postMessage({
-        type: "render", job: state.job, key, w, h, pos: state.pos,
-        palettes: missing.map(({ slug, colors }) => ({ slug, colors })),
+    const palettes = missing.map(({ slug, colors }) => ({ slug, colors }));
+    if (isVideo()) {
+        setStatus("Dithering frames…");
+        worker.postMessage({ type: "render-video", job: state.job, key: state.key, palettes });
+    } else {
+        const { w, h } = size();
+        worker.postMessage({ type: "render", job: state.job, key: state.key, w, h, pos: state.pos, palettes });
+    }
+}
+
+// Video frames are read one at a time on this thread (only it can decode video)
+// and resized in the worker. A few frames may be in flight at once.
+const IN_FLIGHT = 3;
+let extractChain = Promise.resolve();
+
+function startExtraction(key, w, h) {
+    stopExtraction();
+    const media = state.media;
+    const times = frameTimes(media.duration, state.fps);
+    const job = ++state.job;
+    const ex = { job, key, total: times.length, sent: 0, acked: 0, done: false, wake: null };
+    state.extract = ex;
+    worker.postMessage({ type: "video-start", job, key, count: times.length, w, h, pos: state.pos });
+    setStatus(`Reading frames 0 / ${ex.total}`);
+
+    const live = () => state.extract === ex;
+    extractChain = extractChain.then(async () => {
+        try {
+            for (const t of times) {
+                if (!live()) return;
+                await seekTo(media.el, t);
+                if (!live()) return;
+                const bitmap = await createImageBitmap(media.el);
+                while (live() && ex.sent - ex.acked >= IN_FLIGHT) await new Promise((r) => (ex.wake = r));
+                if (!live()) {
+                    bitmap.close();
+                    return;
+                }
+                worker.postMessage({ type: "video-frame", job, index: ex.sent++, bitmap }, [bitmap]);
+            }
+        } catch {
+            if (live()) showDropError("Couldn't read the frames of that video in this browser.");
+        }
     });
+}
+
+function stopExtraction() {
+    const ex = state.extract;
+    state.extract = null;
+    ex?.wake?.();
+}
+
+function onFrameDone(job) {
+    const ex = state.extract;
+    if (ex?.job !== job) return;
+    ex.acked += 1;
+    ex.wake?.();
+    ex.wake = null;
+    setStatus(`Reading frames ${ex.acked} / ${ex.total}`);
+    if (ex.acked === ex.total) {
+        ex.done = true;
+        requestMissing();
+    }
 }
 
 worker.onmessage = (e) => {
     const msg = e.data;
-    if (msg.type === "loaded") onLoaded(msg.width, msg.height);
-    else if (msg.type === "load-error") onLoadError(msg.message);
-    else if (msg.type === "result" && msg.key === state.key) {
-        state.results.set(msg.slug, { rgb: msg.rgb, w: msg.w, h: msg.h });
+    if (msg.type === "loaded") {
+        if (state.media?.kind !== "image") return;
+        Object.assign(state.media, { width: msg.width, height: msg.height });
+        onLoaded();
+    } else if (msg.type === "load-error") {
+        if (state.media?.kind === "image") onLoadError();
+    } else if (msg.type === "frame-done") {
+        onFrameDone(msg.job);
+    } else if (msg.type === "result" && msg.key === state.key) {
+        const p = state.palettes.find((x) => x.slug === msg.slug);
+        if (!p) return;
+        state.results.set(msg.slug, {
+            w: msg.w, h: msg.h, frames: msg.frames, pal: hexPalette(p.colors), delay: delayFor(state.fps), shown: -1,
+        });
         drawCard(msg.slug);
+        if (isVideo() && state.palettes.every((x) => state.results.has(x.slug))) setStatus("");
     }
 };
 
 worker.onerror = () => {
-    showDropError("Something went wrong processing that image. Try reloading the page.");
+    showDropError("Something went wrong processing that file. Try reloading the page.");
 };
 
 // ---------- gallery ----------
 
-const cards = new Map(); // slug -> { el, canvas, download }
+const cards = new Map(); // slug -> { el, canvas, download, label }
 
 function syncGallery() {
     const wanted = new Set(state.palettes.map((p) => p.slug));
@@ -296,46 +458,113 @@ function makeCard(p) {
         sw.append(s);
     }
     const canvas = tpl.querySelector("canvas");
-    canvas.setAttribute("aria-label", `Image in the ${p.name} palette`);
+    canvas.setAttribute("aria-label", `Preview in the ${p.name} palette`);
     const download = tpl.querySelector(".download");
-    download.addEventListener("click", () => downloadPng(p));
+    download.addEventListener("click", () => downloadResult(p));
     tpl.querySelector(".remove").addEventListener("click", () => removePalette(p.slug));
     tpl.querySelector(".remove").setAttribute("aria-label", `Remove ${p.name}`);
-    return { el: tpl, canvas, download };
+    return { el: tpl, canvas, download, label: download.querySelector(".download-label"), busy: false };
 }
 
 function drawCard(slug) {
     const card = cards.get(slug);
     if (!card) return;
     const res = state.results.get(slug);
-    card.el.classList.toggle("pending", Boolean(state.image) && !res);
-    card.el.classList.toggle("blank", !state.image);
-    card.download.disabled = !res;
-    if (!res) return;
-    const { canvas } = card;
-    canvas.width = res.w;
-    canvas.height = res.h;
-    canvas.getContext("2d").putImageData(new ImageData(rgbToRGBA(res.rgb), res.w, res.h), 0, 0);
+    card.el.classList.toggle("pending", Boolean(state.media) && !res);
+    card.el.classList.toggle("blank", !state.media);
+    if (!card.busy) {
+        card.download.disabled = !res;
+        card.label.textContent = isVideo() ? "Download GIF" : "Download";
+    }
+    if (res) drawFrame(card, res, currentFrame(res));
 }
 
-function downloadPng(p) {
+function drawFrame(card, res, i) {
+    const { canvas } = card;
+    if (canvas.width !== res.w || canvas.height !== res.h) {
+        canvas.width = res.w;
+        canvas.height = res.h;
+    }
+    canvas.getContext("2d").putImageData(new ImageData(indicesToRGBA(res.frames[i], res.pal), res.w, res.h), 0, 0);
+    res.shown = i;
+}
+
+// Video previews loop in step with each other, at the GIF's own frame timing.
+const animStart = performance.now();
+function currentFrame(res, now = performance.now()) {
+    return res.frames.length > 1 ? Math.floor((now - animStart) / (res.delay * 10)) % res.frames.length : 0;
+}
+
+function animate(now) {
+    for (const [slug, res] of state.results) {
+        if (res.frames.length < 2) continue;
+        const i = currentFrame(res, now);
+        if (i !== res.shown) {
+            const card = cards.get(slug);
+            if (card) drawFrame(card, res, i);
+        }
+    }
+    requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+function downloadResult(p) {
     const res = state.results.get(p.slug);
     if (!res) return;
+    if (isVideo()) downloadGif(p, res);
+    else downloadPng(p, res);
+}
+
+function downloadPng(p, res) {
     const W = res.w * UPSCALE, H = res.h * UPSCALE;
     const canvas = document.createElement("canvas");
     canvas.width = W;
     canvas.height = H;
-    canvas.getContext("2d").putImageData(new ImageData(upscaleRGBA(res.rgb, res.w, res.h), W, H), 0, 0);
-    canvas.toBlob((blob) => {
-        if (!blob) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `${state.image.name}-${p.slug}.png`;
-        document.body.append(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
-    }, "image/png");
+    const rgb = indicesToRGB(res.frames[0], res.pal);
+    canvas.getContext("2d").putImageData(new ImageData(upscaleRGBA(rgb, res.w, res.h), W, H), 0, 0);
+    const name = `${state.media.name}-${p.slug}.png`;
+    canvas.toBlob((blob) => blob && saveBlob(blob, name), "image/png");
+}
+
+function downloadGif(p, res) {
+    const card = cards.get(p.slug);
+    if (!card || card.busy) return;
+    const name = `${state.media.name}-${p.slug}.gif`;
+    const setBusy = (busy, text) => {
+        card.busy = busy;
+        card.download.disabled = busy;
+        card.label.textContent = text;
+    };
+    setBusy(true, "GIF 0%");
+    const gw = new Worker(new URL("./gif-worker.js", import.meta.url), { type: "module" });
+    const finish = () => {
+        gw.terminate();
+        setBusy(false, "Download GIF");
+        drawCard(p.slug);
+    };
+    gw.onmessage = (e) => {
+        if (e.data.type === "progress") {
+            card.label.textContent = `GIF ${Math.floor((e.data.done / e.data.total) * 100)}%`;
+        } else if (e.data.type === "done") {
+            saveBlob(e.data.blob, name);
+            finish();
+        }
+    };
+    gw.onerror = () => {
+        finish();
+        showDropError("Couldn't build that GIF. It may be too large for this browser's memory.");
+    };
+    gw.postMessage({ width: res.w, height: res.h, palette: res.pal, frames: res.frames, scale: UPSCALE, delay: res.delay });
+}
+
+function saveBlob(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
 
 function removePalette(slug) {
@@ -417,14 +646,15 @@ window.addEventListener("drop", (e) => {
     els.dragOverlay.hidden = true;
     openFile(e.dataTransfer?.files[0]);
 });
-// Ctrl/Cmd+V anywhere except the palette box.
+// Ctrl/Cmd+V anywhere except the palette and frame rate boxes.
 window.addEventListener("paste", (e) => {
-    if (e.target === els.addInput) return;
-    const item = [...(e.clipboardData?.items || [])].find((i) => i.kind === "file" && i.type.startsWith("image/"));
+    if (e.target === els.addInput || e.target === els.fps) return;
+    const item = [...(e.clipboardData?.items || [])]
+        .find((i) => i.kind === "file" && (i.type.startsWith("image/") || i.type.startsWith("video/")));
     const file = item?.getAsFile();
     if (!file) return;
     e.preventDefault();
-    openFile(new File([file], file.name || "pasted-image", { type: file.type }));
+    openFile(new File([file], file.name || "pasted", { type: file.type }));
 });
 
 // Paste buttons read the clipboard directly (needed on touch devices).
@@ -487,6 +717,8 @@ for (const ratio of Object.keys(RATIOS)) {
     b.textContent = ratio;
     els.ratios.append(b);
 }
+els.fps.value = String(DEFAULT_FPS);
+els.previewVideo.muted = true;
 syncGallery();
 
 // Footer: "v<hash> · <commit date>", the hash linking to the commit on GitHub.

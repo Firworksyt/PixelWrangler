@@ -65,7 +65,10 @@ jobs:
 
     - name: Smoke test container
       run: |
-        docker run -d --name test-container -p 8080:8080 ghcr.io/${{ env.REPO }}:test
+        # Same hardening as the recommended compose file, so CI proves it works.
+        docker run -d --name test-container -p 8080:8080 \
+          --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+          ghcr.io/${{ env.REPO }}:test
         for i in $(seq 1 20); do curl -fs http://localhost:8080/version.json && break; sleep 1; done
         echo
         curl -fsS http://localhost:8080/ | grep -q "<title>Pixel Wrangler</title>"
